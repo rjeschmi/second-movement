@@ -80,4 +80,6 @@
 #include "simon_face.h"
 #include "ping_face.h"
 #include "rtccount_face.h"
+#include "ir_test_face.h"
+#include "ir_time_face.h"
 // New includes go above this line.
