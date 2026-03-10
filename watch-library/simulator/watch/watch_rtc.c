@@ -168,6 +168,22 @@ static void _watch_increase_counter(void *userData) {
     (void) userData;
 
     counter += 1;
+    EM_ASM({
+        window.sim_rtc_counter = $0;
+        if (window.ir_pb_frame && window.ir_pb_start >= 0) {
+            var bi = Math.floor(($0 - window.ir_pb_start) / window.ir_pb_tpb);
+            if (bi >= 0 && bi < window.ir_pb_frame.length) {
+                window.ir_adc_value = window.ir_pb_frame[bi] === 1 ? 4200 : 6500;
+                if (bi !== window.ir_pb_last_bi) {
+                    console.log('IR bit ' + bi + ': counter=' + $0 + ' elapsed=' + ($0 - window.ir_pb_start) + ' tpb=' + window.ir_pb_tpb + ' val=' + (window.ir_pb_frame[bi] === 1 ? 'BRIGHT' : 'dark'));
+                    window.ir_pb_last_bi = bi;
+                }
+            } else {
+                window.ir_adc_value = 6500;
+                window.ir_pb_start = -1;
+            }
+        }
+    }, counter);
     // Fire the periodic callbacks that match this counter
     _watch_process_periodic_callbacks();
     // Fire the comp callbacks that match this counter

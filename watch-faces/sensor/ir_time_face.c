@@ -44,11 +44,11 @@ static void _ir_time_reset_decoder(ir_time_state_t *state) {
     state->noise_margin = 0;
     state->tick_count = 0;
     state->last_high = false;
-    state->last_transition_tick = 0;
+    state->last_transition_counter = 0;
     state->interval_sum = 0;
     state->interval_count = 0;
     state->bit_period = 0;
-    state->next_sample_tick = 0;
+    state->next_sample_counter = 0;
     state->bits_received = 0;
     memset(state->data, 0, sizeof(state->data));
 }
@@ -137,6 +137,7 @@ static bool _ir_time_validate_and_decode(ir_time_state_t *state) {
 
 static void _ir_time_process_tick(ir_time_state_t *state) {
     uint16_t reading = adc_get_analog_value(HAL_GPIO_IRSENSE_pin());
+    uint32_t rtc_counter = watch_rtc_get_counter();
     state->tick_count++;
 
     switch (state->decode_state) {
@@ -164,6 +165,8 @@ static void _ir_time_process_tick(ir_time_state_t *state) {
                 } else {
                     state->threshold = 0;
                 }
+                printf("IR cal: baseline=%d min=%d max=%d threshold=%d\n",
+                       state->baseline, state->cal_min, state->cal_max, state->threshold);
                 state->last_high = false;
                 state->decode_state = IR_TIME_LISTENING;
             }
@@ -175,8 +178,10 @@ static void _ir_time_process_tick(ir_time_state_t *state) {
             // Inverted sensor: light = low reading, so "bright" = below threshold
             bool is_bright = reading < state->threshold;
             if (is_bright && !state->last_high) {
-                state->last_transition_tick = state->tick_count;
+                state->last_transition_counter = rtc_counter;
                 state->decode_state = IR_TIME_PREAMBLE;
+                printf("IR listen: first bright counter=%lu adc=%d tick=%d\n",
+                       (unsigned long)rtc_counter, reading, state->tick_count);
             }
             state->last_high = is_bright;
             break;
@@ -186,23 +191,33 @@ static void _ir_time_process_tick(ir_time_state_t *state) {
         {
             bool is_bright = reading < state->threshold;
             if (is_bright != state->last_high) {
-                uint16_t interval = state->tick_count - state->last_transition_tick;
-                state->interval_sum += interval;
+                uint32_t interval = rtc_counter - state->last_transition_counter;
+                printf("IR preamble: transition %d interval=%lu counter=%lu adc=%d\n",
+                       state->interval_count + 1, (unsigned long)interval,
+                       (unsigned long)rtc_counter, reading);
+                // Skip first interval (partial — first bright detected mid-bit)
+                if (state->interval_count > 0) {
+                    state->interval_sum += interval;
+                }
                 state->interval_count++;
-                state->last_transition_tick = state->tick_count;
+                state->last_transition_counter = rtc_counter;
 
-                if (state->interval_count >= IR_TIME_MIN_TRANSITIONS) {
-                    state->bit_period = state->interval_sum / state->interval_count;
+                uint8_t good = state->interval_count > 0 ? state->interval_count - 1 : 0;
+                if (good >= IR_TIME_MIN_TRANSITIONS) {
+                    state->bit_period = state->interval_sum / good;
                 }
             } else if (state->bit_period > 0) {
-                uint16_t since_last = state->tick_count - state->last_transition_tick;
+                uint32_t since_last = rtc_counter - state->last_transition_counter;
                 if (since_last > state->bit_period + state->bit_period / 2) {
                     // Missing transition = start marker found
                     state->decode_state = IR_TIME_DATA;
                     state->bits_received = 0;
-                    state->next_sample_tick = state->last_transition_tick
-                                             + 2 * state->bit_period
-                                             + state->bit_period / 2;
+                    state->next_sample_counter = state->last_transition_counter
+                                                 + 2 * state->bit_period
+                                                 + state->bit_period / 2;
+                    printf("IR sync: bit_period=%lu intervals=%d next_sample=%lu\n",
+                           (unsigned long)state->bit_period, state->interval_count,
+                           (unsigned long)state->next_sample_counter);
                 }
             }
             state->last_high = is_bright;
@@ -211,7 +226,7 @@ static void _ir_time_process_tick(ir_time_state_t *state) {
 
         case IR_TIME_DATA:
         {
-            if (state->tick_count >= state->next_sample_tick) {
+            if (rtc_counter >= state->next_sample_counter) {
                 bool is_bright = reading < state->threshold;
                 uint8_t byte_idx = state->bits_received / 8;
                 uint8_t bit_idx = state->bits_received % 8;
@@ -221,7 +236,7 @@ static void _ir_time_process_tick(ir_time_state_t *state) {
                 }
 
                 state->bits_received++;
-                state->next_sample_tick += state->bit_period;
+                state->next_sample_counter += state->bit_period;
 
                 if (state->bits_received >= IR_TIME_DATA_BITS) {
                     if (_ir_time_validate_and_decode(state)) {
@@ -251,7 +266,11 @@ static void _ir_time_apply(ir_time_state_t *state) {
     dt.unit.hour = state->hour;
     dt.unit.minute = state->minute;
     dt.unit.second = state->second;
+    printf("IR apply: 20%02d-%02d-%02d %02d:%02d:%02d\n",
+           state->year, state->month, state->day,
+           state->hour, state->minute, state->second);
     movement_set_local_date_time(dt);
+    printf("IR apply: time set, unix=%lu\n", (unsigned long)watch_rtc_get_unix_time());
     movement_play_note(BUZZER_NOTE_C6, 80);
     movement_play_note(BUZZER_NOTE_E6, 80);
     movement_play_note(BUZZER_NOTE_G6, 150);
@@ -300,6 +319,7 @@ bool ir_time_face_loop(movement_event_t event, void *context) {
             break;
 
         case EVENT_ALARM_BUTTON_DOWN:
+            printf("IR alarm: state=%d\n", state->decode_state);
             if (state->decode_state == IR_TIME_SUCCESS) {
                 _ir_time_apply(state);
                 state->decode_state = IR_TIME_ERROR; // stop refreshing display

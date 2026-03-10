@@ -1550,6 +1550,21 @@
       <input type="number" min="-100" max="120" id="temp-c" />C
       <button onclick="setTemp()">Set</button>
     </div>
+    <h2>IR Sensor</h2>
+    <div>
+      <input id="ir-slider" type="range" min="0" max="65535" value="6500" oninput="setIR(this.value)" style="width: 200px" />
+      <span id="ir-display">6500</span>
+      &nbsp;
+      <button onclick="setIRPreset(6500)">Dark</button>
+      <button onclick="setIRPreset(4200)">Light</button>
+    </div>
+    <h2>IR Playback</h2>
+    <div>
+      <input id="ir-file" type="file" accept=".irsig,application/json" onchange="loadIRSignal(this)" />
+      <button id="ir-play-btn" onclick="playIRSignal()" disabled>Play</button>
+      <button id="ir-stop-btn" onclick="stopIRSignal()" disabled>Stop</button>
+      <span id="ir-playback-status"></span>
+    </div>
   </div>
 
   <form onSubmit="sendText(); return false" style="display: flex; flex-direction: column; width: 100%">
@@ -1608,6 +1623,7 @@
   lon = 0;
   tx = "";
   temp_c = 25.0;
+  ir_adc_value = 6500;
   function updateLocation(location) {
     lat = Math.round(location.coords.latitude * 100);
     lon = Math.round(location.coords.longitude * 100);
@@ -1683,6 +1699,93 @@
     }
     document.getElementById(skin).checked = true;
     setSkin(skin);
+  }
+
+  function setIR(value) {
+    ir_adc_value = parseInt(value);
+    document.getElementById("ir-display").textContent = ir_adc_value;
+    document.getElementById("ir-slider").value = ir_adc_value;
+  }
+  function setIRPreset(value) {
+    setIR(value);
+  }
+
+  let irSignal = null;
+  let irPlaybackIntervalId = null;
+  let irPlaybackStart = null;
+
+  function loadIRSignal(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        irSignal = JSON.parse(e.target.result);
+        const totalMs = irSignal.frame.length * irSignal.bitPeriodMs;
+        document.getElementById("ir-playback-status").textContent =
+          `Loaded: ${irSignal.frame.length} bits @ ${irSignal.bitPeriodMs}ms = ${(totalMs/1000).toFixed(1)}s — encodes ${irSignal.encodedTime}`;
+        document.getElementById("ir-play-btn").disabled = false;
+      } catch(err) {
+        document.getElementById("ir-playback-status").textContent = "Error parsing file: " + err.message;
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function stopIRSignal() {
+    // Clear the globals that watch_rtc.c EM_ASM reads
+    window.ir_pb_start = -1;
+    window.ir_pb_frame = null;
+    if (irPlaybackIntervalId !== null) {
+      clearInterval(irPlaybackIntervalId);
+      irPlaybackIntervalId = null;
+    }
+    setIR(6500);
+    document.getElementById("ir-play-btn").disabled = (irSignal === null);
+    document.getElementById("ir-stop-btn").disabled = true;
+    document.getElementById("ir-playback-status").textContent = irSignal ?
+      `Stopped. (${irSignal.frame.length} bits @ ${irSignal.bitPeriodMs}ms)` : "";
+  }
+
+  function playIRSignal() {
+    if (!irSignal) return;
+    stopIRSignal();
+
+    const frame = irSignal.frame;
+    const period = irSignal.bitPeriodMs;
+    // RTC runs at 128 Hz — C code in _watch_increase_counter reads these globals
+    // and sets ir_adc_value before the face's EVENT_TICK reads the ADC.
+    window.ir_pb_frame = frame;
+    window.ir_pb_tpb = Math.round(period * 128 / 1000);
+    window.ir_pb_start = window.sim_rtc_counter || 0;
+    window.ir_pb_last_bi = -1;
+    console.log(`IR playback start: bitPeriodMs=${period} ir_pb_tpb=${window.ir_pb_tpb} ir_pb_start=${window.ir_pb_start} frame.length=${frame.length}`);
+
+    document.getElementById("ir-play-btn").disabled = true;
+    document.getElementById("ir-stop-btn").disabled = false;
+
+    // UI-only update interval — no timing-critical work here
+    let lastBitIndex = -1;
+    irPlaybackIntervalId = setInterval(function() {
+      if (window.ir_pb_start < 0) {
+        // C code finished playback
+        clearInterval(irPlaybackIntervalId);
+        irPlaybackIntervalId = null;
+        document.getElementById("ir-play-btn").disabled = false;
+        document.getElementById("ir-stop-btn").disabled = true;
+        document.getElementById("ir-playback-status").textContent =
+          `Done. Encoded time: ${irSignal.encodedTime}`;
+        return;
+      }
+      const elapsed = (window.sim_rtc_counter || 0) - window.ir_pb_start;
+      const bitIndex = Math.floor(elapsed / window.ir_pb_tpb);
+      if (bitIndex !== lastBitIndex && bitIndex >= 0 && bitIndex < frame.length) {
+        lastBitIndex = bitIndex;
+        const pct = Math.round((bitIndex + 1) / frame.length * 100);
+        document.getElementById("ir-playback-status").textContent =
+          `Playing bit ${bitIndex + 1}/${frame.length} (${pct}%)`;
+      }
+    }, 100);
   }
 
   function setTemp() {

@@ -79,14 +79,14 @@ typedef struct {
     uint16_t tick_count;
     bool last_high;
 
-    // Preamble measurement
-    uint16_t last_transition_tick;
+    // Preamble measurement (RTC counter units, 128 Hz)
+    uint32_t last_transition_counter;
     uint32_t interval_sum;
     uint8_t interval_count;
-    uint16_t bit_period;    // measured bit period in ticks
+    uint32_t bit_period;    // measured bit period in RTC ticks
 
     // Data reception
-    uint16_t next_sample_tick;
+    uint32_t next_sample_counter;
     uint8_t bits_received;
     uint8_t data[7];        // 6 data bytes + 1 checksum
 
