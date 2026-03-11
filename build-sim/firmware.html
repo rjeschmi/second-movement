@@ -1711,7 +1711,8 @@
   }
 
   let irSignal = null;
-  let irPlaybackTimeout = null;
+  let irPlaybackIntervalId = null;
+  let irPlaybackStart = null;
 
   function loadIRSignal(input) {
     const file = input.files[0];
@@ -1732,9 +1733,12 @@
   }
 
   function stopIRSignal() {
-    if (irPlaybackTimeout !== null) {
-      clearTimeout(irPlaybackTimeout);
-      irPlaybackTimeout = null;
+    // Clear the globals that watch_rtc.c EM_ASM reads
+    window.ir_pb_start = -1;
+    window.ir_pb_frame = null;
+    if (irPlaybackIntervalId !== null) {
+      clearInterval(irPlaybackIntervalId);
+      irPlaybackIntervalId = null;
     }
     setIR(6500);
     document.getElementById("ir-play-btn").disabled = (irSignal === null);
@@ -1746,33 +1750,42 @@
   function playIRSignal() {
     if (!irSignal) return;
     stopIRSignal();
-    document.getElementById("ir-play-btn").disabled = true;
-    document.getElementById("ir-stop-btn").disabled = false;
 
     const frame = irSignal.frame;
     const period = irSignal.bitPeriodMs;
-    let i = 0;
+    // RTC runs at 128 Hz — C code in _watch_increase_counter reads these globals
+    // and sets ir_adc_value before the face's EVENT_TICK reads the ADC.
+    window.ir_pb_frame = frame;
+    window.ir_pb_tpb = Math.round(period * 128 / 1000);
+    window.ir_pb_start = window.sim_rtc_counter || 0;
+    window.ir_pb_last_bi = -1;
+    console.log(`IR playback start: bitPeriodMs=${period} ir_pb_tpb=${window.ir_pb_tpb} ir_pb_start=${window.ir_pb_start} frame.length=${frame.length}`);
 
-    function sendBit() {
-      if (i >= frame.length) {
-        setIR(6500);
+    document.getElementById("ir-play-btn").disabled = true;
+    document.getElementById("ir-stop-btn").disabled = false;
+
+    // UI-only update interval — no timing-critical work here
+    let lastBitIndex = -1;
+    irPlaybackIntervalId = setInterval(function() {
+      if (window.ir_pb_start < 0) {
+        // C code finished playback
+        clearInterval(irPlaybackIntervalId);
+        irPlaybackIntervalId = null;
         document.getElementById("ir-play-btn").disabled = false;
         document.getElementById("ir-stop-btn").disabled = true;
         document.getElementById("ir-playback-status").textContent =
           `Done. Encoded time: ${irSignal.encodedTime}`;
-        irPlaybackTimeout = null;
         return;
       }
-      // Sensor is inverted: bit=1 (light on) → low ADC (~4200), bit=0 → high ADC (~6500)
-      setIR(frame[i] === 1 ? 4200 : 6500);
-      const pct = Math.round((i + 1) / frame.length * 100);
-      document.getElementById("ir-playback-status").textContent =
-        `Playing bit ${i + 1}/${frame.length} (${pct}%)`;
-      i++;
-      irPlaybackTimeout = setTimeout(sendBit, period);
-    }
-
-    sendBit();
+      const elapsed = (window.sim_rtc_counter || 0) - window.ir_pb_start;
+      const bitIndex = Math.floor(elapsed / window.ir_pb_tpb);
+      if (bitIndex !== lastBitIndex && bitIndex >= 0 && bitIndex < frame.length) {
+        lastBitIndex = bitIndex;
+        const pct = Math.round((bitIndex + 1) / frame.length * 100);
+        document.getElementById("ir-playback-status").textContent =
+          `Playing bit ${bitIndex + 1}/${frame.length} (${pct}%)`;
+      }
+    }, 100);
   }
 
   function setTemp() {
