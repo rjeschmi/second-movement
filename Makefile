@@ -86,6 +86,7 @@ INCLUDES += \
   -I./watch-faces/sensor \
   -I./watch-faces/settings \
   -I./watch-faces/io \
+  -I./watch-faces/ir-faces \
 
 # Add your source files here.
 SRCS += \

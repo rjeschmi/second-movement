@@ -35,6 +35,7 @@ const watch_face_t watch_faces[] = {
     fast_stopwatch_face,
     countdown_face,
     alarm_face,
+    totp_lfs_face,
 #ifdef HAS_IR_SENSOR
     ir_test_face,
     ir_time_face,
